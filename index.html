@@ -1,0 +1,1202 @@
+<style>
+  * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+  }
+  body {
+      font-family: 'Inter', sans-serif;
+      color: #eee;
+      overflow: hidden;
+  }
+  #container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(ellipse at 50% 50%, #001a35 0%, #00050a 100%);
+      overflow: hidden;
+  }
+  .glassmorphic-instructions {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 25px;
+      background: rgba(0, 25, 50, 0.2);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-radius: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #cce7ff;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+  }
+  canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+  }
+</style>
+
+<div id="container"></div>
+      <div class="glassmorphic-instructions">Click to morph • Drag to rotate • Arrow keys to rotate • Mouse wheel or +/- to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+  let scene, camera, renderer, particles, stars, nebulaLayer1, nebulaLayer2, nebulaLayer3;
+  let composer;
+  let clock = new THREE.Clock();
+  const particleCount = 15000;
+  const starCount = 7000;
+
+  let currentPattern = 0;
+  let isTransitioning = false;
+  let transitionProgress = 0;
+  const transitionSpeed = 0.015;
+
+  // Biến cho chức năng xoay
+  let isMouseDown = false;
+  let mouseX = 0, mouseY = 0;
+  let rotationX = 0, rotationY = 0;
+  let targetRotationX = 0, targetRotationY = 0;
+  const rotationSpeed = 0.02;
+  
+  // Zoom variables
+  let cameraDistance = 100;
+  let targetCameraDistance = 100;
+  const minDistance = 20;
+  const maxDistance = 200;
+  const zoomSpeed = 0.1;
+
+  // Biến cho điều khiển bằng phím
+  const keys = {
+      ArrowUp: false,
+      ArrowDown: false,
+      ArrowLeft: false,
+      ArrowRight: false,
+      Equal: false,      // Phím + để zoom in
+      Minus: false       // Phím - để zoom out
+  };
+  const keyboardRotationSpeed = 0.05;
+
+  const patternPalettes = [
+      [new THREE.Color(0x00509E), new THREE.Color(0x00B4D8), new THREE.Color(0xADE8F4)],
+      [new THREE.Color(0x4A00E0), new THREE.Color(0x8E2DE2), new THREE.Color(0xC166D8)],
+      [new THREE.Color(0xFF6B6B), new THREE.Color(0xFFB8B8), new THREE.Color(0xFFF1F1)],
+      [new THREE.Color(0x007F5F), new THREE.Color(0x55A630), new THREE.Color(0xAACC00)],
+      [new THREE.Color(0xFF1493), new THREE.Color(0xFF69B4), new THREE.Color(0xFFB6C1)], // Màu hồng cho hộp quà sinh nhật
+      [new THREE.Color(0xFF1493), new THREE.Color(0xFF69B4), new THREE.Color(0xFFB6C1)], // Màu hồng cho trái tim
+      [new THREE.Color(0x8B0000), new THREE.Color(0xDC143C), new THREE.Color(0xFF69B4), new THREE.Color(0xFFB6C1), new THREE.Color(0x228B22), new THREE.Color(0x32CD32)], // Màu đỏ hồng + xanh lá cho hoa hồng
+      [new THREE.Color(0xFF69B4), new THREE.Color(0xFF1493), new THREE.Color(0xDC143C)], // Màu đỏ hồng dịu cho Happy
+      [new THREE.Color(0xFF69B4), new THREE.Color(0xFF1493), new THREE.Color(0xFF6347)] // Màu hồng cho Birthday
+  ];
+
+  function normalizePoints(points, size) {
+      if (points.length === 0) return points;
+      const box = new THREE.Box3().setFromPoints(points);
+      if (box.isEmpty() || !isFinite(box.max.x) || !isFinite(box.min.x)) {
+          points.forEach(p => p.set(0, 0, 0));
+          return points;
+      }
+      const center = box.getCenter(new THREE.Vector3());
+      const boxSize = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(boxSize.x, boxSize.y, boxSize.z);
+      const scale = (maxDim > 1e-6) ? size / maxDim : 1.0;
+      points.forEach(p => {
+          if (isFinite(p.x) && isFinite(p.y) && isFinite(p.z)) {
+              p.sub(center).multiplyScalar(scale);
+          } else {
+              p.set(0, 0, 0);
+          }
+      });
+      return points;
+  }
+
+  function createTorusKnotPoints(count) {
+      const points = [];
+      const radius = 18, tube = 6, p = 5, q = 4, twists = 2;
+      for (let i = 0; i < count; i++) {
+          const t = (i / count) * Math.PI * 2 * q;
+          const angle = p / q * t;
+          const R = radius + tube * Math.cos(t);
+          const baseX = R * Math.cos(angle);
+          const baseY = R * Math.sin(angle);
+          const baseZ = tube * Math.sin(t);
+          const twistAngle = twists * t;
+          const twistRadius = 1.5;
+          const normal = new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0);
+          const tangent = R > 1e-6 ? new THREE.Vector3(-R * Math.sin(angle), R * Math.cos(angle), tube * Math.cos(t)).normalize() : new THREE.Vector3(0, 0, 1);
+          const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+          const x = baseX + twistRadius * (binormal.x * Math.cos(twistAngle) + normal.x * Math.sin(twistAngle));
+          const y = baseY + twistRadius * (binormal.y * Math.cos(twistAngle) + normal.y * Math.sin(twistAngle));
+          const z = baseZ + twistRadius * (binormal.z * Math.cos(twistAngle) + normal.z * Math.sin(twistAngle));
+          points.push(new THREE.Vector3(x, y, z));
+      }
+      return normalizePoints(points, 65);
+  }
+
+  function createEllipticalOrbitPoints(count) {
+      const points = [];
+      const numOrbits = 8;
+      const particlesPerOrbit = Math.floor(count / numOrbits);
+      const baseRadius = 6, orbitSpacing = 4;
+      for (let orbit = 0; orbit < numOrbits; orbit++) {
+          const eccentricity = 0.5 + Math.random() * 0.45;
+          const a = baseRadius + orbit * orbitSpacing * (1 + (orbit / numOrbits) * 0.5);
+          const b = a * Math.sqrt(1 - Math.min(eccentricity, 0.999) ** 2);
+          const tiltX = (Math.random() - 0.5) * Math.PI / 2.5;
+          const tiltY = (Math.random() - 0.5) * Math.PI / 2.5;
+          const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(tiltX, tiltY, Math.random() * Math.PI));
+          for (let i = 0; i < particlesPerOrbit; i++) {
+              const theta = (i / particlesPerOrbit) * Math.PI * 2;
+              const radiusFactor = 1.0 + (Math.random() - 0.5) * 0.1;
+              const angleOffset = (Math.random() - 0.5) * 0.05;
+              const x = a * Math.cos(theta + angleOffset) * radiusFactor;
+              const y = b * Math.sin(theta + angleOffset) * radiusFactor;
+              const zWave = 1.5 * Math.sin(theta * 3 + orbit * 0.5);
+              const point = new THREE.Vector3(x, y, zWave).applyQuaternion(rotation);
+              points.push(point);
+          }
+      }
+      for (let i = points.length; i < count; i++) {
+           points.push(points[i % points.length].clone().multiplyScalar(1 + (Math.random()-0.5)*0.05));
+      }
+      return normalizePoints(points, 70);
+  }
+
+  function createWaveOrbitPoints(count) {
+      const points = [];
+      const baseRadius = 20, rAmp1 = 6, rFreq1 = 3, rAmp2 = 2.5, rFreq2 = 7;
+      const zAmp1 = 5, zFreq1 = 4, zAmp2 = 2, zFreq2 = 11;
+      for (let i = 0; i < count; i++) {
+          const t = (i / count) * Math.PI * 2;
+          const currentRadius = baseRadius + rAmp1 * Math.sin(rFreq1 * t) + rAmp2 * Math.cos(rFreq2 * t + Math.PI / 3);
+          const x = currentRadius * Math.cos(t);
+          const y = currentRadius * Math.sin(t);
+          const z = zAmp1 * Math.sin(zFreq1 * t + Math.PI / 5) + zAmp2 * Math.cos(zFreq2 * t);
+          points.push(new THREE.Vector3(x, y, z));
+      }
+      return normalizePoints(points, 60);
+  }
+  
+  function createCosmicWebPoints(count) {
+      const points = [];
+      const numStrands = 15;
+      const particlesPerStrand = Math.floor(count / numStrands);
+      const scale = 80;
+      for (let i = 0; i < numStrands; i++) {
+          const start = new THREE.Vector3(
+              (Math.random() - 0.5) * scale,
+              (Math.random() - 0.5) * scale,
+              (Math.random() - 0.5) * scale
+          );
+          const end = new THREE.Vector3(
+              (Math.random() - 0.5) * scale,
+              (Math.random() - 0.5) * scale,
+              (Math.random() - 0.5) * scale
+          );
+          const control1 = start.clone().lerp(end, 0.33).add(new THREE.Vector3().randomDirection().multiplyScalar(scale/4));
+          const control2 = start.clone().lerp(end, 0.66).add(new THREE.Vector3().randomDirection().multiplyScalar(scale/4));
+          const curve = new THREE.CubicBezierCurve3(start, control1, control2, end);
+          const strandPoints = curve.getPoints(particlesPerStrand - 1);
+          strandPoints.forEach(p => {
+              points.push(p);
+          });
+      }
+      for (let i = points.length; i < count; i++) {
+           points.push(points[i % points.length].clone().multiplyScalar(1 + (Math.random()-0.5)*0.05));
+      }
+      return normalizePoints(points, 80);
+  }
+
+  function createHeartPoints(count) {
+      const points = [];
+      const thickness = 4;
+      
+      // Sử dụng công thức toán học chuẩn cho hình trái tim
+      for (let i = 0; i < count; i++) {
+          const t = (i / count) * Math.PI * 2;
+          
+          // Công thức trái tim chuẩn với tỷ lệ cân đối
+          const x = 16 * Math.pow(Math.sin(t), 3);
+          const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+          
+          // Thêm độ dày 3D với phân bố đều hơn
+          const layerCount = 3;
+          const layerIndex = i % layerCount;
+          const z = (layerIndex - 1) * (thickness / layerCount);
+          
+          // Thêm biến thiên nhỏ để tạo hiệu ứng tự nhiên
+          const noiseX = (Math.random() - 0.5) * 0.5;
+          const noiseY = (Math.random() - 0.5) * 0.5;
+          const noiseZ = (Math.random() - 0.5) * 0.3;
+          
+          points.push(new THREE.Vector3(
+              x + noiseX,
+              y + noiseY,
+              z + noiseZ
+          ));
+      }
+      
+      return normalizePoints(points, 40);
+  }
+
+  function createGiftBoxPoints(count) {
+      const points = [];
+      const boxWidth = 20;
+      const boxHeight = 15;
+      const boxDepth = 20;
+      const lidHeight = 8;
+      
+      // Chia particles cho các phần của hộp quà
+      const boxCount = Math.floor(count * 0.4); // Thân hộp
+      const lidCount = Math.floor(count * 0.3); // Nắp hộp
+      const ribbonCount = Math.floor(count * 0.2); // Dây buộc
+      const remainingCount = count - boxCount - lidCount - ribbonCount;
+      
+      // Tạo thân hộp quà
+      for (let i = 0; i < boxCount; i++) {
+          const progress = i / boxCount;
+          const side = Math.floor(progress * 6); // 6 mặt của hộp
+          const sideProgress = (progress * 6) % 1;
+          
+          let x, y, z;
+          
+          switch (side) {
+              case 0: // Mặt trước
+                  x = (sideProgress - 0.5) * boxWidth;
+                  y = (Math.random() - 0.5) * boxHeight;
+                  z = boxDepth / 2;
+                  break;
+              case 1: // Mặt sau
+                  x = (sideProgress - 0.5) * boxWidth;
+                  y = (Math.random() - 0.5) * boxHeight;
+                  z = -boxDepth / 2;
+                  break;
+              case 2: // Mặt trái
+                  x = -boxWidth / 2;
+                  y = (sideProgress - 0.5) * boxHeight;
+                  z = (Math.random() - 0.5) * boxDepth;
+                  break;
+              case 3: // Mặt phải
+                  x = boxWidth / 2;
+                  y = (sideProgress - 0.5) * boxHeight;
+                  z = (Math.random() - 0.5) * boxDepth;
+                  break;
+              case 4: // Mặt dưới
+                  x = (Math.random() - 0.5) * boxWidth;
+                  y = -boxHeight / 2;
+                  z = (sideProgress - 0.5) * boxDepth;
+                  break;
+              case 5: // Mặt trên (sẽ bị nắp che)
+                  x = (Math.random() - 0.5) * boxWidth;
+                  y = boxHeight / 2;
+                  z = (sideProgress - 0.5) * boxDepth;
+                  break;
+          }
+          
+          // Thêm biến thiên nhỏ
+          const noiseX = (Math.random() - 0.5) * 0.5;
+          const noiseY = (Math.random() - 0.5) * 0.5;
+          const noiseZ = (Math.random() - 0.5) * 0.5;
+          
+          points.push(new THREE.Vector3(
+              x + noiseX,
+              y + noiseY,
+              z + noiseZ
+          ));
+      }
+      
+      // Tạo nắp hộp quà
+      for (let i = 0; i < lidCount; i++) {
+          const progress = i / lidCount;
+          const side = Math.floor(progress * 5); // 5 mặt của nắp (không có mặt dưới)
+          const sideProgress = (progress * 5) % 1;
+          
+          let x, y, z;
+          const lidY = boxHeight / 2 + lidHeight / 2;
+          
+          switch (side) {
+              case 0: // Mặt trước nắp
+                  x = (sideProgress - 0.5) * boxWidth;
+                  y = lidY + (Math.random() - 0.5) * lidHeight;
+                  z = boxDepth / 2;
+                  break;
+              case 1: // Mặt sau nắp
+                  x = (sideProgress - 0.5) * boxWidth;
+                  y = lidY + (Math.random() - 0.5) * lidHeight;
+                  z = -boxDepth / 2;
+                  break;
+              case 2: // Mặt trái nắp
+                  x = -boxWidth / 2;
+                  y = lidY + (sideProgress - 0.5) * lidHeight;
+                  z = (Math.random() - 0.5) * boxDepth;
+                  break;
+              case 3: // Mặt phải nắp
+                  x = boxWidth / 2;
+                  y = lidY + (sideProgress - 0.5) * lidHeight;
+                  z = (Math.random() - 0.5) * boxDepth;
+                  break;
+              case 4: // Mặt trên nắp
+                  x = (Math.random() - 0.5) * boxWidth;
+                  y = lidY + lidHeight / 2;
+                  z = (sideProgress - 0.5) * boxDepth;
+                  break;
+          }
+          
+          // Thêm biến thiên nhỏ
+          const noiseX = (Math.random() - 0.5) * 0.5;
+          const noiseY = (Math.random() - 0.5) * 0.5;
+          const noiseZ = (Math.random() - 0.5) * 0.5;
+          
+          points.push(new THREE.Vector3(
+              x + noiseX,
+              y + noiseY,
+              z + noiseZ
+          ));
+      }
+      
+      // Tạo dây buộc hộp quà
+      for (let i = 0; i < ribbonCount; i++) {
+          const progress = i / ribbonCount;
+          const ribbonType = Math.floor(progress * 2); // 2 dây buộc
+          const ribbonProgress = (progress * 2) % 1;
+          
+          let x, y, z;
+          
+          if (ribbonType === 0) {
+              // Dây buộc ngang
+              x = (ribbonProgress - 0.5) * boxWidth;
+              y = boxHeight / 2 + lidHeight / 2;
+              z = (Math.random() - 0.5) * boxDepth;
+          } else {
+              // Dây buộc dọc
+              x = (Math.random() - 0.5) * boxWidth;
+              y = boxHeight / 2 + lidHeight / 2;
+              z = (ribbonProgress - 0.5) * boxDepth;
+          }
+          
+          // Thêm biến thiên cho dây buộc
+          const noiseX = (Math.random() - 0.5) * 0.3;
+          const noiseY = (Math.random() - 0.5) * 0.3;
+          const noiseZ = (Math.random() - 0.5) * 0.3;
+          
+          points.push(new THREE.Vector3(
+              x + noiseX,
+              y + noiseY,
+              z + noiseZ
+          ));
+      }
+      
+      // Thêm particles bổ sung
+      for (let i = 0; i < remainingCount; i++) {
+          const x = (Math.random() - 0.5) * boxWidth;
+          const y = (Math.random() - 0.5) * (boxHeight + lidHeight);
+          const z = (Math.random() - 0.5) * boxDepth;
+          
+          points.push(new THREE.Vector3(x, y, z));
+      }
+      
+      return normalizePoints(points, 50);
+  }
+
+  function createHappyPoints(count) {
+      const points = [];
+      const thickness = 2;
+      const letterWidth = 8;
+      const letterHeight = 12;
+      
+      // Định nghĩa các chữ cái bằng grid pattern
+      const letters = {
+          'H': [
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,1,1,1,1,1,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1]
+          ],
+          'A': [
+              [0,0,1,1,1,0,0],
+              [0,1,0,0,0,1,0],
+              [1,0,0,0,0,0,1],
+              [1,1,1,1,1,1,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1]
+          ],
+          'P': [
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,1,0],
+              [1,0,0,0,0,1,0],
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,0,0],
+              [1,0,0,0,0,0,0],
+              [1,0,0,0,0,0,0]
+          ],
+          'Y': [
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [0,1,0,0,0,1,0],
+              [0,0,1,1,1,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0]
+          ]
+      };
+      
+      const happyText = "HAPPY";
+      let pointIndex = 0;
+      
+      // Tạo chữ "HAPPY"
+      for (let letterIndex = 0; letterIndex < happyText.length && pointIndex < count; letterIndex++) {
+          const letter = happyText[letterIndex];
+          const letterPattern = letters[letter] || letters['A'];
+          const startX = (letterIndex - happyText.length/2) * (letterWidth + 2);
+          const startY = 0;
+          
+          const particlesPerLetter = Math.floor((count - pointIndex) / (happyText.length - letterIndex));
+          
+          for (let i = 0; i < particlesPerLetter && pointIndex < count; i++) {
+              const row = Math.floor(Math.random() * letterPattern.length);
+              const col = Math.floor(Math.random() * letterPattern[0].length);
+              
+              if (letterPattern[row][col] === 1) {
+                  const x = startX + col * (letterWidth / letterPattern[0].length) - letterWidth/2;
+                  const y = startY + (letterPattern.length - 1 - row - letterPattern.length/2) * (letterHeight / letterPattern.length);
+                  const z = (Math.random() - 0.5) * thickness;
+                  
+                  const noiseX = (Math.random() - 0.5) * 0.3;
+                  const noiseY = (Math.random() - 0.5) * 0.3;
+                  const noiseZ = (Math.random() - 0.5) * 0.2;
+                  
+                  points.push(new THREE.Vector3(
+                      x + noiseX,
+                      y + noiseY,
+                      z + noiseZ
+                  ));
+                  pointIndex++;
+              }
+          }
+      }
+      
+      return normalizePoints(points, 50);
+  }
+
+  function createBirthdayPoints(count) {
+      const points = [];
+      const thickness = 2;
+      const letterWidth = 8;
+      const letterHeight = 12;
+      
+      // Định nghĩa các chữ cái bằng grid pattern
+      const letters = {
+          'B': [
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,1,0],
+              [1,0,0,0,0,1,0],
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,1,0],
+              [1,0,0,0,0,1,0],
+              [1,1,1,1,1,0,0]
+          ],
+          'I': [
+              [1,1,1,1,1,1,1],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [1,1,1,1,1,1,1]
+          ],
+          'R': [
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,1,0],
+              [1,0,0,0,0,1,0],
+              [1,1,1,1,1,0,0],
+              [1,0,1,0,0,0,0],
+              [1,0,0,1,0,0,0],
+              [1,0,0,0,1,0,0]
+          ],
+          'T': [
+              [1,1,1,1,1,1,1],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0]
+          ],
+          'H': [
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,1,1,1,1,1,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1]
+          ],
+          'D': [
+              [1,1,1,1,1,0,0],
+              [1,0,0,0,0,1,0],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,1,0],
+              [1,1,1,1,1,0,0]
+          ],
+          'A': [
+              [0,0,1,1,1,0,0],
+              [0,1,0,0,0,1,0],
+              [1,0,0,0,0,0,1],
+              [1,1,1,1,1,1,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1]
+          ],
+          'Y': [
+              [1,0,0,0,0,0,1],
+              [1,0,0,0,0,0,1],
+              [0,1,0,0,0,1,0],
+              [0,0,1,1,1,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0],
+              [0,0,0,1,0,0,0]
+          ]
+      };
+      
+      const birthdayText = "BIRTHDAY";
+      let pointIndex = 0;
+      
+      // Tạo chữ "BIRTHDAY"
+      for (let letterIndex = 0; letterIndex < birthdayText.length && pointIndex < count; letterIndex++) {
+          const letter = birthdayText[letterIndex];
+          const letterPattern = letters[letter] || letters['A'];
+          const startX = (letterIndex - birthdayText.length/2) * (letterWidth + 2);
+          const startY = 0;
+          
+          const particlesPerLetter = Math.floor((count - pointIndex) / (birthdayText.length - letterIndex));
+          
+          for (let i = 0; i < particlesPerLetter && pointIndex < count; i++) {
+              const row = Math.floor(Math.random() * letterPattern.length);
+              const col = Math.floor(Math.random() * letterPattern[0].length);
+              
+              if (letterPattern[row][col] === 1) {
+                  const x = startX + col * (letterWidth / letterPattern[0].length) - letterWidth/2;
+                  const y = startY + (letterPattern.length - 1 - row - letterPattern.length/2) * (letterHeight / letterPattern.length);
+                  const z = (Math.random() - 0.5) * thickness;
+                  
+                  const noiseX = (Math.random() - 0.5) * 0.3;
+                  const noiseY = (Math.random() - 0.5) * 0.3;
+                  const noiseZ = (Math.random() - 0.5) * 0.2;
+                  
+                  points.push(new THREE.Vector3(
+                      x + noiseX,
+                      y + noiseY,
+                      z + noiseZ
+                  ));
+                  pointIndex++;
+              }
+          }
+      }
+      
+      return normalizePoints(points, 50);
+  }
+
+  function createRosePoints(count) {
+      const points = [];
+      const roseRadius = 20;
+      const roseHeight = 12;
+      const numPetals = 24; // Số cánh hoa
+      const numLayers = 6; // Số lớp cánh hoa
+      
+      let pointIndex = 0;
+      
+      // Tạo từng lớp cánh hoa từ trong ra ngoài
+      for (let layer = 0; layer < numLayers && pointIndex < count; layer++) {
+          const layerRadius = (layer + 1) * (roseRadius / numLayers);
+          const layerHeight = layer * (roseHeight / numLayers);
+          const layerPetals = Math.floor(numPetals * (layer + 1) / numLayers);
+          const particlesPerLayer = Math.floor((count - pointIndex) / (numLayers - layer));
+          
+          for (let i = 0; i < particlesPerLayer && pointIndex < count; i++) {
+              const petalIndex = Math.floor(i / (particlesPerLayer / layerPetals));
+              const angle = (petalIndex / layerPetals) * Math.PI * 2;
+              
+              // Tạo hình dạng cánh hoa với đường cong tự nhiên
+              const petalAngle = angle + Math.sin(angle * 3) * 0.2;
+              const petalRadius = layerRadius * (0.8 + Math.random() * 0.4);
+              
+              // Vị trí cơ bản của cánh hoa
+              let x = petalRadius * Math.cos(petalAngle);
+              let y = petalRadius * Math.sin(petalAngle);
+              let z = layerHeight;
+              
+              // Tạo hiệu ứng cuộn cánh hoa
+              const curlFactor = Math.sin(layer * 0.5) * 0.6;
+              const curlAngle = petalAngle + Math.PI * 0.5;
+              const curlX = Math.cos(curlAngle) * curlFactor;
+              const curlY = Math.sin(curlAngle) * curlFactor;
+              
+              x += curlX;
+              y += curlY;
+              z += Math.sin(petalAngle * 2) * 1.5; // Tạo độ cao sóng
+              
+              // Thêm biến thiên để tạo hiệu ứng tự nhiên
+              const noiseX = (Math.random() - 0.5) * 0.8;
+              const noiseY = (Math.random() - 0.5) * 0.8;
+              const noiseZ = (Math.random() - 0.5) * 0.5;
+              
+              points.push(new THREE.Vector3(
+                  x + noiseX,
+                  y + noiseY,
+                  z + noiseZ
+              ));
+              pointIndex++;
+          }
+      }
+      
+      // Thêm phần nhụy hoa ở trung tâm
+      const centerCount = Math.min(100, count - pointIndex);
+      for (let i = 0; i < centerCount; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const radius = Math.random() * 2;
+          const height = Math.random() * 3;
+          
+          const x = radius * Math.cos(angle);
+          const y = radius * Math.sin(angle);
+          const z = height;
+          
+          points.push(new THREE.Vector3(x, y, z));
+      }
+      
+      // Thêm cuống hoa hồng dài và rõ ràng hơn
+      const stemCount = Math.min(800, count - pointIndex);
+      for (let i = 0; i < stemCount; i++) {
+          const t = i / stemCount;
+          const stemHeight = -5 - t * 80; // Cuống bắt đầu từ -5 và dài 80 units xuống dưới
+          const stemRadius = 2.0 - t * 0.8; // Cuống dày hơn, nhỏ dần từ trên xuống
+
+          // Tạo cuống thẳng hơn để rõ ràng
+          const curveAngle = t * Math.PI * 0.1; // Giảm độ cong
+          const curveRadius = 1.0; // Giảm bán kính cong
+          const curveX = Math.sin(curveAngle) * curveRadius;
+          const curveY = Math.cos(curveAngle) * curveRadius;
+
+          // Thêm biến thiên nhỏ để tạo cuống tự nhiên
+          const noiseX = (Math.random() - 0.5) * stemRadius * 0.5;
+          const noiseY = (Math.random() - 0.5) * stemRadius * 0.5;
+          const noiseZ = (Math.random() - 0.5) * 0.5;
+
+          const x = curveX + noiseX;
+          const y = curveY + noiseY;
+          const z = stemHeight + noiseZ;
+
+          points.push(new THREE.Vector3(x, y, z));
+      }
+      
+      // Thêm lá cho cuống hoa - nằm trên cuống dài
+      const leafCount = Math.min(300, count - pointIndex);
+      for (let i = 0; i < leafCount; i++) {
+          const t = Math.random();
+          const leafHeight = -8 - t * 60; // Lá từ -8 đến -68 (trên cuống dài)
+          const leafAngle = Math.random() * Math.PI * 2;
+          const leafDistance = 2.5 + Math.random() * 1.5; // Khoảng cách từ cuống
+
+          // Tạo hình lá oval
+          const leafX = Math.cos(leafAngle) * leafDistance;
+          const leafY = Math.sin(leafAngle) * leafDistance;
+          const leafZ = leafHeight + (Math.random() - 0.5) * 2;
+
+          // Thêm biến thiên để tạo hình lá tự nhiên
+          const noiseX = (Math.random() - 0.5) * 1.0;
+          const noiseY = (Math.random() - 0.5) * 1.0;
+          const noiseZ = (Math.random() - 0.5) * 0.8;
+
+          points.push(new THREE.Vector3(
+              leafX + noiseX,
+              leafY + noiseY,
+              leafZ + noiseZ
+          ));
+      }
+      
+      return normalizePoints(points, 45);
+  }
+
+  const patterns = [
+      createTorusKnotPoints,
+      createEllipticalOrbitPoints,
+      createWaveOrbitPoints,
+      createCosmicWebPoints,
+      createGiftBoxPoints,
+      createHeartPoints,
+      createRosePoints,
+      createHappyPoints,
+      createBirthdayPoints
+  ];
+
+  function createStarfield() {
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(starCount * 3);
+      const colors = new Float32Array(starCount * 3);
+      const randoms = new Float32Array(starCount);
+      const starRadius = 800;
+      for (let i = 0; i < starCount; i++) {
+          const theta = Math.random() * 2 * Math.PI;
+          const phi = Math.acos(2 * Math.random() - 1);
+          positions[i * 3] = starRadius * Math.sin(phi) * Math.cos(theta);
+          positions[i * 3 + 1] = starRadius * Math.sin(phi) * Math.sin(theta);
+          positions[i * 3 + 2] = starRadius * Math.cos(phi);
+          const hue = 0.55 + Math.random() * 0.2;
+          const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+          colors[i * 3] = color.r;
+          colors[i * 3 + 1] = color.g;
+          colors[i * 3 + 2] = color.b;
+          randoms[i] = Math.random() * Math.PI * 2;
+      }
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute('random', new THREE.BufferAttribute(randoms, 1));
+      const material = new THREE.ShaderMaterial({
+          uniforms: { time: { value: 0 } },
+          vertexShader: `
+              uniform float time;
+              attribute float random;
+              varying vec3 vColor;
+              void main() {
+                  vColor = color;
+                  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                  float size = 1.5 + 0.5 * sin(time * 0.5 + random);
+                  gl_PointSize = size * (300.0 / -mvPosition.z);
+                  gl_Position = projectionMatrix * mvPosition;
+              }`,
+          fragmentShader: `
+              varying vec3 vColor;
+              void main() {
+                  if (length(gl_PointCoord - vec2(0.5, 0.5)) > 0.48) discard;
+                  gl_FragColor = vec4(vColor, 1.0);
+              }`,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          vertexColors: true
+      });
+      return new THREE.Points(geometry, material);
+  }
+
+  function createNebulaStars(numStars, baseSize, sizeVariation, radius, opacity) {
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(numStars * 3);
+      const colors = new Float32Array(numStars * 3);
+      const sizes = new Float32Array(numStars);
+      for (let i = 0; i < numStars; i++) {
+          const theta = Math.random() * 2 * Math.PI;
+          const phi = Math.acos(2 * Math.random() - 1);
+          positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+          positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+          positions[i * 3 + 2] = radius * Math.cos(phi);
+          const hue = 0.6 + Math.random() * 0.2;
+          const color = new THREE.Color().setHSL(hue, 0.3, 0.6);
+          colors[i * 3] = color.r;
+          colors[i * 3 + 1] = color.g;
+          colors[i * 3 + 2] = color.b;
+          sizes[i] = baseSize + Math.random() * sizeVariation;
+      }
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+      const material = new THREE.ShaderMaterial({
+          uniforms: { uOpacity: { value: opacity } },
+          vertexShader: `
+              attribute float size;
+              varying vec3 vColor;
+              void main() {
+                  vColor = color;
+                  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                  gl_PointSize = size * (300.0 / -mvPosition.z);
+                  gl_Position = projectionMatrix * mvPosition;
+              }`,
+          fragmentShader: `
+              uniform float uOpacity;
+              varying vec3 vColor;
+              void main() {
+                  float dist = length(gl_PointCoord - vec2(0.5));
+                  if (dist > 0.5) discard;
+                  float alpha = 1.0 - smoothstep(0.4, 0.5, dist);
+                  gl_FragColor = vec4(vColor, alpha * uOpacity);
+              }`,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          vertexColors: true
+      });
+      return new THREE.Points(geometry, material);
+  }
+
+  function createParticleSystem() {
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+      const colors = new Float32Array(particleCount * 3);
+      const sizes = new Float32Array(particleCount);
+      const randoms = new Float32Array(particleCount);
+      for (let i = 0; i < particleCount; i++) {
+          sizes[i] = 0.5 + Math.random() * 3.5;
+          randoms[i] = Math.random() * Math.PI * 2;
+      }
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+      geometry.setAttribute('random', new THREE.BufferAttribute(randoms, 1));
+      const material = new THREE.ShaderMaterial({
+          uniforms: { time: { value: 0 } },
+          vertexShader: `
+              uniform float time;
+              attribute float size;
+              attribute float random;
+              varying vec3 vColor;
+              void main() {
+                  vColor = color;
+                  vec3 pos = position;
+                  float angle = time * 0.4 + random;
+                  float displacement = 0.5 + sin(random * 2.0) * 0.2;
+                  pos.x += sin(angle + pos.y * 0.1) * displacement;
+                  pos.y += cos(angle + pos.z * 0.1) * displacement;
+                  pos.z += sin(angle + pos.x * 0.1) * displacement;
+                  vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                  float pulse = 0.95 + 0.05 * sin(time * 1.5 + random);
+                  gl_Position = projectionMatrix * mvPosition;
+                  gl_PointSize = size * pulse * (300.0 / -mvPosition.z);
+              }`,
+          fragmentShader: `
+              varying vec3 vColor;
+              void main() {
+                  float dist = length(gl_PointCoord - vec2(0.5));
+                  if (dist > 0.5) discard;
+                  float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+                  gl_FragColor = vec4(vColor, alpha);
+              }`,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          vertexColors: true
+      });
+      return new THREE.Points(geometry, material);
+  }
+
+  function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x000815, 0.008);
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+      camera.position.z = 50;
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      document.getElementById('container').appendChild(renderer.domElement);
+      stars = createStarfield();
+      scene.add(stars);
+      nebulaLayer1 = createNebulaStars(200, 15, 8, 700, 0.15);
+      nebulaLayer2 = createNebulaStars(300, 8, 5, 600, 0.3);
+      nebulaLayer3 = createNebulaStars(400, 5, 3, 500, 0.5);
+      scene.add(nebulaLayer1, nebulaLayer2, nebulaLayer3);
+      particles = createParticleSystem();
+      scene.add(particles);
+      composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      const bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          0.35,
+          0.4,
+          0.8
+      );
+      composer.addPass(bloomPass);
+      composer.addPass(new OutputPass());
+      window.addEventListener('resize', onWindowResize, false);
+      document.addEventListener('pointerdown', onInteraction, false);
+      
+      // Thêm event listeners cho chức năng xoay
+      document.addEventListener('mousedown', onMouseDown, false);
+      document.addEventListener('mousemove', onMouseMove, false);
+      document.addEventListener('mouseup', onMouseUp, false);
+      document.addEventListener('touchstart', onTouchStart, false);
+      document.addEventListener('touchmove', onTouchMove, false);
+      document.addEventListener('touchend', onTouchEnd, false);
+      
+      // Thêm event listeners cho bàn phím
+  document.addEventListener('keydown', onKeyDown, false);
+  document.addEventListener('keyup', onKeyUp, false);
+  document.addEventListener('wheel', onMouseWheel, false);
+      
+      setInitialPattern();
+  }
+
+  function onWindowResize() {
+      if (!camera || !renderer || !composer) return;
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function onInteraction() {
+      if (!isTransitioning) {
+          currentPattern = (currentPattern + 1) % patterns.length;
+          startTransition();
+      }
+  }
+
+  // Các function xử lý xoay vật thể
+  function onMouseDown(event) {
+      isMouseDown = true;
+      mouseX = event.clientX;
+      mouseY = event.clientY;
+  }
+
+  function onMouseMove(event) {
+      if (!isMouseDown) return;
+      
+      const deltaX = event.clientX - mouseX;
+      const deltaY = event.clientY - mouseY;
+      
+      targetRotationY += deltaX * 0.01;
+      targetRotationX += deltaY * 0.01;
+      
+      // Giới hạn góc xoay X
+      targetRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, targetRotationX));
+      
+      mouseX = event.clientX;
+      mouseY = event.clientY;
+  }
+
+  function onMouseUp(event) {
+      isMouseDown = false;
+  }
+
+  function onTouchStart(event) {
+      if (event.touches.length === 1) {
+          isMouseDown = true;
+          mouseX = event.touches[0].clientX;
+          mouseY = event.touches[0].clientY;
+      }
+  }
+
+  function onTouchMove(event) {
+      if (!isMouseDown || event.touches.length !== 1) return;
+      
+      const deltaX = event.touches[0].clientX - mouseX;
+      const deltaY = event.touches[0].clientY - mouseY;
+      
+      targetRotationY += deltaX * 0.01;
+      targetRotationX += deltaY * 0.01;
+      
+      // Giới hạn góc xoay X
+      targetRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, targetRotationX));
+      
+      mouseX = event.touches[0].clientX;
+      mouseY = event.touches[0].clientY;
+  }
+
+  function onTouchEnd(event) {
+      isMouseDown = false;
+  }
+
+  // Các function xử lý bàn phím
+  function onKeyDown(event) {
+      if (keys.hasOwnProperty(event.code)) {
+          keys[event.code] = true;
+          event.preventDefault(); // Ngăn scroll trang
+      }
+      
+      // Xử lý zoom bằng phím +/-
+      if (event.key === '+' || event.key === '=') {
+          targetCameraDistance = Math.max(minDistance, targetCameraDistance - 10);
+          event.preventDefault();
+      } else if (event.key === '-') {
+          targetCameraDistance = Math.min(maxDistance, targetCameraDistance + 10);
+          event.preventDefault();
+      }
+  }
+
+  function onKeyUp(event) {
+      if (keys.hasOwnProperty(event.code)) {
+          keys[event.code] = false;
+          event.preventDefault();
+      }
+  }
+
+  // Mouse wheel zoom
+  function onMouseWheel(event) {
+      event.preventDefault();
+      const delta = event.deltaY;
+      if (delta > 0) {
+          targetCameraDistance = Math.min(maxDistance, targetCameraDistance + 10);
+      } else {
+          targetCameraDistance = Math.max(minDistance, targetCameraDistance - 10);
+      }
+  }
+
+  function setInitialPattern() {
+      if (!particles) return;
+      const points = patterns[currentPattern](particleCount);
+      const positions = particles.geometry.attributes.position.array;
+      for (let i = 0; i < particleCount; i++) {
+          const idx = i * 3;
+          if (points[i]) {
+              positions[idx] = points[i].x;
+              positions[idx + 1] = points[i].y;
+              positions[idx + 2] = points[i].z;
+          } else {
+              positions[idx] = 0; positions[idx+1] = 0; positions[idx+2] = 0;
+          }
+      }
+      particles.geometry.attributes.position.needsUpdate = true;
+      const palette = patternPalettes[currentPattern];
+      const colors = particles.geometry.attributes.color.array;
+      for (let i = 0; i < particleCount; i++) {
+          const color = palette[i % palette.length];
+          colors[i * 3] = color.r;
+          colors[i * 3 + 1] = color.g;
+          colors[i * 3 + 2] = color.b;
+      }
+      particles.geometry.attributes.color.needsUpdate = true;
+  }
+
+  function startTransition() {
+      if (!particles) return;
+      isTransitioning = true;
+      transitionProgress = 0;
+      const nextPoints = patterns[currentPattern](particleCount);
+      if (!particles.userData) particles.userData = {};
+      particles.userData.fromPositions = new Float32Array(particles.geometry.attributes.position.array);
+      particles.userData.toPositions = new Float32Array(particleCount * 3);
+      for (let i = 0; i < particleCount; i++) {
+          const idx = i * 3;
+          if (nextPoints[i]) {
+              particles.userData.toPositions[idx] = nextPoints[i].x;
+              particles.userData.toPositions[idx + 1] = nextPoints[i].y;
+              particles.userData.toPositions[idx + 2] = nextPoints[i].z;
+          } else {
+              particles.userData.toPositions[idx] = particles.userData.fromPositions[idx];
+              particles.userData.toPositions[idx+1] = particles.userData.fromPositions[idx+1];
+              particles.userData.toPositions[idx+2] = particles.userData.fromPositions[idx+2];
+          }
+      }
+      const nextPalette = patternPalettes[currentPattern];
+      particles.userData.fromColors = new Float32Array(particles.geometry.attributes.color.array);
+      particles.userData.toColors = new Float32Array(particleCount * 3);
+      for (let i = 0; i < particleCount; i++) {
+          const color = nextPalette[i % nextPalette.length];
+          particles.userData.toColors[i * 3] = color.r;
+          particles.userData.toColors[i * 3 + 1] = color.g;
+          particles.userData.toColors[i * 3 + 2] = color.b;
+      }
+  }
+
+  function updateTransition() {
+      if (!isTransitioning) return;
+      transitionProgress += transitionSpeed;
+      let easedProgress = 0.5 - Math.cos(transitionProgress * Math.PI) * 0.5;
+      if (transitionProgress >= 1) {
+          easedProgress = 1;
+          isTransitioning = false;
+      }
+      if (!particles || !particles.geometry || !particles.userData.fromPositions) return;
+      const positions = particles.geometry.attributes.position.array;
+      const fromPos = particles.userData.fromPositions;
+      const toPos = particles.userData.toPositions;
+      for (let i = 0; i < positions.length; i++) {
+          positions[i] = fromPos[i] + (toPos[i] - fromPos[i]) * easedProgress;
+      }
+      particles.geometry.attributes.position.needsUpdate = true;
+      const colors = particles.geometry.attributes.color.array;
+      const fromColors = particles.userData.fromColors;
+      const toColors = particles.userData.toColors;
+      for (let i = 0; i < colors.length; i++) {
+          colors[i] = fromColors[i] + (toColors[i] - fromColors[i]) * easedProgress;
+      }
+      particles.geometry.attributes.color.needsUpdate = true;
+      if (!isTransitioning) {
+          delete particles.userData.fromPositions;
+          delete particles.userData.toPositions;
+          delete particles.userData.fromColors;
+          delete particles.userData.toColors;
+      }
+  }
+
+  function animate() {
+      requestAnimationFrame(animate);
+      const deltaTime = clock.getDelta();
+      const elapsedTime = clock.getElapsedTime();
+      updateTransition();
+      
+      // Cập nhật xoay particles
+      if (particles) {
+          // Xử lý input từ bàn phím
+          if (keys.ArrowUp) targetRotationX -= keyboardRotationSpeed;
+          if (keys.ArrowDown) targetRotationX += keyboardRotationSpeed;
+          if (keys.ArrowLeft) targetRotationY -= keyboardRotationSpeed;
+          if (keys.ArrowRight) targetRotationY += keyboardRotationSpeed;
+
+          // Giới hạn góc xoay X
+          targetRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, targetRotationX));
+
+          // Smooth rotation interpolation
+          rotationX += (targetRotationX - rotationX) * rotationSpeed;
+          rotationY += (targetRotationY - rotationY) * rotationSpeed;
+
+          // Áp dụng xoay cho particles
+          particles.rotation.x = rotationX;
+          particles.rotation.y = rotationY;
+      }
+
+      // Xử lý zoom
+      cameraDistance += (targetCameraDistance - cameraDistance) * zoomSpeed;
+      
+      if (camera) {
+          const time = elapsedTime;
+          let orbitRadius = 60 - 20 * Math.sin(transitionProgress * Math.PI);
+          
+          // Áp dụng zoom vào quỹ đạo camera
+          const finalRadius = orbitRadius * (cameraDistance / 100);
+          
+          camera.position.x = Math.sin(time * 0.08) * finalRadius;
+          camera.position.z = Math.cos(time * 0.08) * finalRadius;
+          camera.position.y = Math.sin(time * 0.1) * 20;
+          camera.lookAt(0, 0, 0);
+      }
+      if (particles?.material.uniforms.time) {
+          particles.material.uniforms.time.value = elapsedTime;
+      }
+      if (stars?.material.uniforms.time) {
+          stars.material.uniforms.time.value = elapsedTime;
+      }
+      if (nebulaLayer1) nebulaLayer1.rotation.y += 0.00005;
+      if (nebulaLayer2) nebulaLayer2.rotation.y += 0.0001;
+      if (nebulaLayer3) nebulaLayer3.rotation.y += 0.00015;
+      if (composer) {
+          composer.render(deltaTime);
+      } else if (renderer && scene && camera) {
+          renderer.render(scene, camera);
+      }
+  }
+  init();
+  animate();
+</script>
