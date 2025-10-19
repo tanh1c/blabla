@@ -1,4 +1,4 @@
-<style>
+  <style>
   * {
       margin: 0;
       padding: 0;
@@ -8,6 +8,14 @@
       font-family: 'Inter', sans-serif;
       color: #eee;
       overflow: hidden;
+      /* Cải thiện tương thích mobile */
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      -khtml-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
   }
   #container {
       position: fixed;
@@ -65,8 +73,10 @@
   let scene, camera, renderer, particles, stars, nebulaLayer1, nebulaLayer2, nebulaLayer3;
   let composer;
   let clock = new THREE.Clock();
-  const particleCount = 15000;
-  const starCount = 7000;
+  // Giảm số lượng particles cho mobile
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const particleCount = isMobile ? 8000 : 15000;
+  const starCount = isMobile ? 3000 : 7000;
 
   let currentPattern = 0;
   let isTransitioning = false;
@@ -907,9 +917,23 @@
       scene.fog = new THREE.FogExp2(0x000815, 0.008);
       camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
       camera.position.z = 50;
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      
+      // Cải thiện tương thích mobile
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      
+      renderer = new THREE.WebGLRenderer({ 
+          antialias: false, // Tắt antialias để tăng performance trên mobile
+          alpha: true,
+          powerPreference: "high-performance",
+          failIfMajorPerformanceCaveat: false
+      });
+      
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Giới hạn pixel ratio
+      renderer.shadowMap.enabled = false; // Tắt shadow map
+      renderer.autoClear = true;
+      
       document.getElementById('container').appendChild(renderer.domElement);
       stars = createStarfield();
       scene.add(stars);
@@ -919,16 +943,19 @@
       scene.add(nebulaLayer1, nebulaLayer2, nebulaLayer3);
       particles = createParticleSystem();
       scene.add(particles);
-      composer = new EffectComposer(renderer);
-      composer.addPass(new RenderPass(scene, camera));
-      const bloomPass = new UnrealBloomPass(
-          new THREE.Vector2(window.innerWidth, window.innerHeight),
-          0.35,
-          0.4,
-          0.8
-      );
-      composer.addPass(bloomPass);
-      composer.addPass(new OutputPass());
+      // Chỉ sử dụng post-processing trên desktop
+      if (!isMobile) {
+          composer = new EffectComposer(renderer);
+          composer.addPass(new RenderPass(scene, camera));
+          const bloomPass = new UnrealBloomPass(
+              new THREE.Vector2(window.innerWidth, window.innerHeight),
+              0.35,
+              0.4,
+              0.8
+          );
+          composer.addPass(bloomPass);
+          composer.addPass(new OutputPass());
+      }
       window.addEventListener('resize', onWindowResize, false);
       document.addEventListener('pointerdown', onInteraction, false);
       
@@ -949,11 +976,13 @@
   }
 
   function onWindowResize() {
-      if (!camera || !renderer || !composer) return;
+      if (!camera || !renderer) return;
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
-      composer.setSize(window.innerWidth, window.innerHeight);
+      if (composer && !isMobile) {
+          composer.setSize(window.innerWidth, window.innerHeight);
+      }
   }
 
   function onInteraction() {
@@ -1191,7 +1220,7 @@
       if (nebulaLayer1) nebulaLayer1.rotation.y += 0.00005;
       if (nebulaLayer2) nebulaLayer2.rotation.y += 0.0001;
       if (nebulaLayer3) nebulaLayer3.rotation.y += 0.00015;
-      if (composer) {
+      if (composer && !isMobile) {
           composer.render(deltaTime);
       } else if (renderer && scene && camera) {
           renderer.render(scene, camera);
